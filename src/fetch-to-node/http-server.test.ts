@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { toComputeResponse, toReqRes } from "./http-server";
+import { toFetchResponse, toReqRes } from "./http-server";
 
 test("multiple set-cookie headers", async () => {
   const { res: nodeRes } = toReqRes(new Request("https://example.com"));
@@ -9,7 +9,7 @@ test("multiple set-cookie headers", async () => {
   nodeRes.writeHead(200);
   nodeRes.end();
 
-  const webResponse = await toComputeResponse(nodeRes);
+  const webResponse = await toFetchResponse(nodeRes);
   expect(webResponse.headers.get("set-cookie")).toEqual(
     "type=ninja, language=javascript"
   );

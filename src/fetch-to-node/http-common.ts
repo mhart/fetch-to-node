@@ -1,7 +1,8 @@
 /*
- * Copyright Fastly, Inc.
+ * Copyright Michael Hart
  * Licensed under the MIT license. See LICENSE file for details.
  *
+ * Portions of this file Copyright Fastly, Inc. See LICENSE file for details.
  * Portions of this file Copyright Joyent, Inc. and other Node contributors. See LICENSE file for details.
  */
 
@@ -14,9 +15,8 @@ const tokenRegExp = /^[\^_`a-zA-Z\-0-9!#$%&'*+.|~]+$/;
  * See https://tools.ietf.org/html/rfc7230#section-3.2.6
  */
 export function checkIsHttpToken(val: string) {
-  return tokenRegExp.exec(val) !== null;
+  return tokenRegExp.test(val);
 }
-
 
 const headerCharRegex = /[^\t\x20-\x7e\x80-\xff]/;
 /**
@@ -26,9 +26,7 @@ const headerCharRegex = /[^\t\x20-\x7e\x80-\xff]/;
  *  field-vchar    = VCHAR / obs-text
  */
 export function checkInvalidHeaderChar(val: string) {
-  return headerCharRegex.exec(val) !== null;
+  return headerCharRegex.test(val);
 }
 
-
-export const chunkExpression = /(?:^|\W)chunked(?:$|\W)/i
-
+export const chunkExpression = /(?:^|\W)chunked(?:$|\W)/i;

@@ -1,27 +1,28 @@
 /*
- * Copyright Fastly, Inc.
+ * Copyright Michael Hart
  * Licensed under the MIT license. See LICENSE file for details.
  *
+ * Portions of this file Copyright Fastly, Inc. See LICENSE file for details.
  * Portions of this file Copyright Joyent, Inc. and other Node contributors. See LICENSE file for details.
  */
 
 // This file modeled after Node.js - node/lib/_http_incoming.js
 
-import type { IncomingHttpHeaders, IncomingMessage } from 'http';
-import { Readable } from 'stream';
+import { Readable } from "node:stream";
+import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 
-import { ERR_METHOD_NOT_IMPLEMENTED } from '../utils/errors.js';
+import { ERR_METHOD_NOT_IMPLEMENTED } from "../utils/errors.js";
 
-const kHeaders = Symbol('kHeaders');
-const kHeadersDistinct = Symbol('kHeadersDistinct');
-const kHeadersCount = Symbol('kHeadersCount');
-const kTrailers = Symbol('kTrailers');
-const kTrailersDistinct = Symbol('kTrailersDistinct');
-const kTrailersCount = Symbol('kTrailersCount');
+const kHeaders = Symbol("kHeaders");
+const kHeadersDistinct = Symbol("kHeadersDistinct");
+const kHeadersCount = Symbol("kHeadersCount");
+const kTrailers = Symbol("kTrailers");
+const kTrailersDistinct = Symbol("kTrailersDistinct");
+const kTrailersCount = Symbol("kTrailersCount");
 
 /**
  * This is an implementation of IncomingMessage from Node.js intended to run in
- * Fastly Compute. The 'Readable' interface of this class is wired to a 'Request'
+ * a WinterTC runtime. The 'Readable' interface of this class is wired to a 'Request'
  * object's 'body'.
  *
  * This instance can be used in normal ways, but it does not give access to the
@@ -29,11 +30,10 @@ const kTrailersCount = Symbol('kTrailersCount');
  *
  * Some code in this class is transplanted/adapted from node/lib/_http_incoming.js
  */
-export class ComputeJsIncomingMessage extends Readable implements IncomingMessage {
-
+export class FetchIncomingMessage extends Readable implements IncomingMessage {
   // This actually reaches into in Readable
   declare _readableState: {
-    readingMore: boolean,
+    readingMore: boolean;
   };
 
   get socket(): any {
@@ -44,7 +44,7 @@ export class ComputeJsIncomingMessage extends Readable implements IncomingMessag
   set socket(_val: any) {
     // Difference from Node.js -
     // We don't really have a way to support direct access to the socket
-    throw new ERR_METHOD_NOT_IMPLEMENTED('socket');
+    throw new ERR_METHOD_NOT_IMPLEMENTED("socket");
   }
 
   httpVersionMajor!: number;
@@ -67,7 +67,7 @@ export class ComputeJsIncomingMessage extends Readable implements IncomingMessag
   upgrade: boolean = false;
 
   // request (server) only
-  url: string = '';
+  url: string = "";
   method!: string;
 
   // TODO: Support ClientRequest
@@ -82,7 +82,6 @@ export class ComputeJsIncomingMessage extends Readable implements IncomingMessag
   _stream: ReadableStream | null = null;
 
   constructor() {
-
     const streamOptions = {};
 
     // Difference from Node.js -
@@ -110,7 +109,7 @@ export class ComputeJsIncomingMessage extends Readable implements IncomingMessag
   set connection(_socket: any) {
     // Difference from Node.js -
     // We don't really have a way to support direct access to the socket
-    console.error('No support for IncomingMessage.connection');
+    console.error("No support for IncomingMessage.connection");
   }
 
   get headers() {
@@ -208,7 +207,7 @@ export class ComputeJsIncomingMessage extends Readable implements IncomingMessag
     // filled by the parserOnBody function.
     // For our implementation, we use the ReadableStream instance.
 
-    if(this._stream == null) {
+    if (this._stream == null) {
       // For GET and HEAD requests, the stream would be empty.
       // Simply signal that we're done.
       this.complete = true;
@@ -236,7 +235,7 @@ export class ComputeJsIncomingMessage extends Readable implements IncomingMessag
   override _destroy(err: Error | null, cb: (err?: Error | null) => void) {
     if (!this.readableEnded || !this.complete) {
       this.aborted = true;
-      this.emit('aborted');
+      this.emit("aborted");
     }
 
     // Difference from Node.js -
@@ -247,7 +246,7 @@ export class ComputeJsIncomingMessage extends Readable implements IncomingMessag
     // regardless of whether there was an error. The callback is expected to
     // check for the existence of the error to decide whether the result was
     // actually an error.
-    process.nextTick(onError, this, err, cb);
+    setTimeout(onError, 0, this, err, cb);
   }
 
   _addHeaderLines(headers: string[], n: number) {
@@ -277,17 +276,17 @@ export class ComputeJsIncomingMessage extends Readable implements IncomingMessag
     if (flag === 0 || flag === 2) {
       field = field.slice(1);
       // Make a delimited list
-      if (typeof dest[field] === 'string') {
-        dest[field] += (flag === 0 ? ', ' : '; ') + value;
+      if (typeof dest[field] === "string") {
+        dest[field] += (flag === 0 ? ", " : "; ") + value;
       } else {
         dest[field] = value;
       }
     } else if (flag === 1) {
       // Array header -- only Set-Cookie at the moment
-      if (dest['set-cookie'] !== undefined) {
-        dest['set-cookie'].push(value);
+      if (dest["set-cookie"] !== undefined) {
+        dest["set-cookie"].push(value);
       } else {
-        dest['set-cookie'] = [value];
+        dest["set-cookie"] = [value];
       }
     } else if (dest[field] === undefined) {
       // Drop duplicates
@@ -295,7 +294,11 @@ export class ComputeJsIncomingMessage extends Readable implements IncomingMessag
     }
   }
 
-  _addHeaderLineDistinct(field: string, value: string, dest: Record<string, string[]>) {
+  _addHeaderLineDistinct(
+    field: string,
+    value: string,
+    dest: Record<string, string[]>
+  ) {
     field = field.toLowerCase();
     if (!dest[field]) {
       dest[field] = [value];
@@ -303,7 +306,6 @@ export class ComputeJsIncomingMessage extends Readable implements IncomingMessag
       dest[field].push(value);
     }
   }
-
 }
 
 /* These items copied from Node.js: node/lib/_http_incoming.js, because they are not exported from that file. */
@@ -321,104 +323,104 @@ export class ComputeJsIncomingMessage extends Readable implements IncomingMessag
 function matchKnownFields(field: string, lowercased: boolean = false): string {
   switch (field.length) {
     case 3:
-      if (field === 'Age' || field === 'age') return 'age';
+      if (field === "Age" || field === "age") return "age";
       break;
     case 4:
-      if (field === 'Host' || field === 'host') return 'host';
-      if (field === 'From' || field === 'from') return 'from';
-      if (field === 'ETag' || field === 'etag') return 'etag';
-      if (field === 'Date' || field === 'date') return '\u0000date';
-      if (field === 'Vary' || field === 'vary') return '\u0000vary';
+      if (field === "Host" || field === "host") return "host";
+      if (field === "From" || field === "from") return "from";
+      if (field === "ETag" || field === "etag") return "etag";
+      if (field === "Date" || field === "date") return "\u0000date";
+      if (field === "Vary" || field === "vary") return "\u0000vary";
       break;
     case 6:
-      if (field === 'Server' || field === 'server') return 'server';
-      if (field === 'Cookie' || field === 'cookie') return '\u0002cookie';
-      if (field === 'Origin' || field === 'origin') return '\u0000origin';
-      if (field === 'Expect' || field === 'expect') return '\u0000expect';
-      if (field === 'Accept' || field === 'accept') return '\u0000accept';
+      if (field === "Server" || field === "server") return "server";
+      if (field === "Cookie" || field === "cookie") return "\u0002cookie";
+      if (field === "Origin" || field === "origin") return "\u0000origin";
+      if (field === "Expect" || field === "expect") return "\u0000expect";
+      if (field === "Accept" || field === "accept") return "\u0000accept";
       break;
     case 7:
-      if (field === 'Referer' || field === 'referer') return 'referer';
-      if (field === 'Expires' || field === 'expires') return 'expires';
-      if (field === 'Upgrade' || field === 'upgrade') return '\u0000upgrade';
+      if (field === "Referer" || field === "referer") return "referer";
+      if (field === "Expires" || field === "expires") return "expires";
+      if (field === "Upgrade" || field === "upgrade") return "\u0000upgrade";
       break;
     case 8:
-      if (field === 'Location' || field === 'location')
-        return 'location';
-      if (field === 'If-Match' || field === 'if-match')
-        return '\u0000if-match';
+      if (field === "Location" || field === "location") return "location";
+      if (field === "If-Match" || field === "if-match") return "\u0000if-match";
       break;
     case 10:
-      if (field === 'User-Agent' || field === 'user-agent')
-        return 'user-agent';
-      if (field === 'Set-Cookie' || field === 'set-cookie')
-        return '\u0001';
-      if (field === 'Connection' || field === 'connection')
-        return '\u0000connection';
+      if (field === "User-Agent" || field === "user-agent") return "user-agent";
+      if (field === "Set-Cookie" || field === "set-cookie") return "\u0001";
+      if (field === "Connection" || field === "connection")
+        return "\u0000connection";
       break;
     case 11:
-      if (field === 'Retry-After' || field === 'retry-after')
-        return 'retry-after';
+      if (field === "Retry-After" || field === "retry-after")
+        return "retry-after";
       break;
     case 12:
-      if (field === 'Content-Type' || field === 'content-type')
-        return 'content-type';
-      if (field === 'Max-Forwards' || field === 'max-forwards')
-        return 'max-forwards';
+      if (field === "Content-Type" || field === "content-type")
+        return "content-type";
+      if (field === "Max-Forwards" || field === "max-forwards")
+        return "max-forwards";
       break;
     case 13:
-      if (field === 'Authorization' || field === 'authorization')
-        return 'authorization';
-      if (field === 'Last-Modified' || field === 'last-modified')
-        return 'last-modified';
-      if (field === 'Cache-Control' || field === 'cache-control')
-        return '\u0000cache-control';
-      if (field === 'If-None-Match' || field === 'if-none-match')
-        return '\u0000if-none-match';
+      if (field === "Authorization" || field === "authorization")
+        return "authorization";
+      if (field === "Last-Modified" || field === "last-modified")
+        return "last-modified";
+      if (field === "Cache-Control" || field === "cache-control")
+        return "\u0000cache-control";
+      if (field === "If-None-Match" || field === "if-none-match")
+        return "\u0000if-none-match";
       break;
     case 14:
-      if (field === 'Content-Length' || field === 'content-length')
-        return 'content-length';
+      if (field === "Content-Length" || field === "content-length")
+        return "content-length";
       break;
     case 15:
-      if (field === 'Accept-Encoding' || field === 'accept-encoding')
-        return '\u0000accept-encoding';
-      if (field === 'Accept-Language' || field === 'accept-language')
-        return '\u0000accept-language';
-      if (field === 'X-Forwarded-For' || field === 'x-forwarded-for')
-        return '\u0000x-forwarded-for';
+      if (field === "Accept-Encoding" || field === "accept-encoding")
+        return "\u0000accept-encoding";
+      if (field === "Accept-Language" || field === "accept-language")
+        return "\u0000accept-language";
+      if (field === "X-Forwarded-For" || field === "x-forwarded-for")
+        return "\u0000x-forwarded-for";
       break;
     case 16:
-      if (field === 'Content-Encoding' || field === 'content-encoding')
-        return '\u0000content-encoding';
-      if (field === 'X-Forwarded-Host' || field === 'x-forwarded-host')
-        return '\u0000x-forwarded-host';
+      if (field === "Content-Encoding" || field === "content-encoding")
+        return "\u0000content-encoding";
+      if (field === "X-Forwarded-Host" || field === "x-forwarded-host")
+        return "\u0000x-forwarded-host";
       break;
     case 17:
-      if (field === 'If-Modified-Since' || field === 'if-modified-since')
-        return 'if-modified-since';
-      if (field === 'Transfer-Encoding' || field === 'transfer-encoding')
-        return '\u0000transfer-encoding';
-      if (field === 'X-Forwarded-Proto' || field === 'x-forwarded-proto')
-        return '\u0000x-forwarded-proto';
+      if (field === "If-Modified-Since" || field === "if-modified-since")
+        return "if-modified-since";
+      if (field === "Transfer-Encoding" || field === "transfer-encoding")
+        return "\u0000transfer-encoding";
+      if (field === "X-Forwarded-Proto" || field === "x-forwarded-proto")
+        return "\u0000x-forwarded-proto";
       break;
     case 19:
-      if (field === 'Proxy-Authorization' || field === 'proxy-authorization')
-        return 'proxy-authorization';
-      if (field === 'If-Unmodified-Since' || field === 'if-unmodified-since')
-        return 'if-unmodified-since';
+      if (field === "Proxy-Authorization" || field === "proxy-authorization")
+        return "proxy-authorization";
+      if (field === "If-Unmodified-Since" || field === "if-unmodified-since")
+        return "if-unmodified-since";
       break;
   }
   if (lowercased) {
-    return '\u0000' + field;
+    return "\u0000" + field;
   }
   return matchKnownFields(field.toLowerCase(), true);
 }
 
-function onError(self: ComputeJsIncomingMessage, error: Error | null, cb: (err?: Error | null) => void) {
+function onError(
+  self: FetchIncomingMessage,
+  error: Error | null,
+  cb: (err?: Error | null) => void
+) {
   // This is to keep backward compatible behavior.
   // An error is emitted only if there are listeners attached to the event.
-  if (self.listenerCount('error') === 0) {
+  if (self.listenerCount("error") === 0) {
     cb();
   } else {
     cb(error);

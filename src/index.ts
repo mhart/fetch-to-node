@@ -3,25 +3,13 @@
  * Licensed under the MIT license. See LICENSE file for details.
  */
 
-/// <reference types="@fastly/js-compute" />
-
-export { ComputeJsIncomingMessage } from './http-compute-js/http-incoming.js';
-export { ComputeJsOutgoingMessage } from './http-compute-js/http-outgoing.js';
+export { FetchIncomingMessage } from "./fetch-to-node/http-incoming.js";
+export { FetchOutgoingMessage } from "./fetch-to-node/http-outgoing.js";
 export {
   STATUS_CODES,
-  createServer,
   toReqRes,
-  toComputeResponse,
-  ComputeJsServerResponse,
-  HttpServer,
-  HttpServerOptions,
+  toFetchResponse,
+  FetchServerResponse,
   ReqRes,
   ToReqResOptions,
-} from './http-compute-js/http-server.js';
-
-import {
-  createServer
-} from './http-compute-js/http-server.js';
-export default {
-  createServer,
-};
+} from "./fetch-to-node/http-server.js";

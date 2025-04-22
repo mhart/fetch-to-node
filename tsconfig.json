@@ -2,8 +2,8 @@
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "./dist",
-    "target": "es2018",
-    "lib": [ "es2018" ],
+    "target": "ES2022",
+    "lib": ["ES2022"],
     "moduleResolution": "node",
 
     "allowUnreachableCode": false,
@@ -21,11 +21,6 @@
     "strict": true,
     "useUnknownInCatchVariables": false
   },
-  "include": [
-    "src/**/*.ts",
-    "test/**/*.ts"
-  ],
-  "exclude": [
-    "node_modules",
-  ]
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules"]
 }

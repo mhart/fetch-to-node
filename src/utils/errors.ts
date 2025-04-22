@@ -1,27 +1,28 @@
 /*
- * Copyright Fastly, Inc.
+ * Copyright Michael Hart
  * Licensed under the MIT license. See LICENSE file for details.
  *
+ * Portions of this file Copyright Fastly, Inc. See LICENSE file for details.
  * Portions of this file Copyright Joyent, Inc. and other Node contributors. See LICENSE file for details.
  */
 
-import util from 'node-inspect-extracted';
+import util from "node:util";
 
 /* These items copied from Node.js: node/lib/internal/errors.js */
 
 const classRegExp = /^([A-Z][a-z0-9]*)+$/;
 // Sorted by a rough estimate on most frequently used entries.
 const kTypes = [
-  'string',
-  'function',
-  'number',
-  'object',
+  "string",
+  "function",
+  "number",
+  "object",
   // Accept 'Function' and 'Object' as alternative to the lower cased version.
-  'Function',
-  'Object',
-  'boolean',
-  'bigint',
-  'symbol',
+  "Function",
+  "Object",
+  "boolean",
+  "bigint",
+  "symbol",
 ];
 
 /**
@@ -31,20 +32,21 @@ const kTypes = [
  */
 function determineSpecificType(value: any) {
   if (value == null) {
-    return '' + value;
+    return "" + value;
   }
-  if (typeof value === 'function' && value.name) {
+  if (typeof value === "function" && value.name) {
     return `function ${value.name}`;
   }
-  if (typeof value === 'object') {
+  if (typeof value === "object") {
     if (value.constructor?.name) {
       return `an instance of ${value.constructor.name}`;
     }
     return `${util.inspect(value, { depth: -1 })}`;
   }
-  let inspected = util
-    .inspect(value, { colors: false });
-  if (inspected.length > 28) { inspected = `${inspected.slice(0, 25)}...`; }
+  let inspected = util.inspect(value, { colors: false });
+  if (inspected.length > 28) {
+    inspected = `${inspected.slice(0, 25)}...`;
+  }
 
   return `type ${typeof value} (${inspected})`;
 }
@@ -59,12 +61,12 @@ export class ERR_HTTP_HEADERS_SENT extends Error {
 }
 
 export class ERR_INVALID_ARG_VALUE extends TypeError /*, RangeError */ {
-  constructor(name: string, value: any, reason: string = 'is invalid') {
+  constructor(name: string, value: any, reason: string = "is invalid") {
     let inspected = util.inspect(value);
     if (inspected.length > 128) {
       inspected = `${inspected.slice(0, 128)}...`;
     }
-    const type = name.includes('.') ? 'property' : 'argument';
+    const type = name.includes(".") ? "property" : "argument";
     super(`The ${type} '${name}' ${reason}. Received ${inspected}`);
   }
 }
@@ -104,15 +106,15 @@ export class ERR_INVALID_ARG_TYPE extends TypeError {
       expected = [expected];
     }
 
-    let msg = 'The ';
-    if (name.endsWith(' argument')) {
+    let msg = "The ";
+    if (name.endsWith(" argument")) {
       // For cases like 'first argument'
       msg += `${name} `;
     } else {
-      const type = name.includes('.') ? 'property' : 'argument';
+      const type = name.includes(".") ? "property" : "argument";
       msg += `"${name}" ${type} `;
     }
-    msg += 'must be ';
+    msg += "must be ";
 
     const types = [];
     const instances = [];
@@ -135,50 +137,46 @@ export class ERR_INVALID_ARG_TYPE extends TypeError {
     // Special handle `object` in case other instances are allowed to outline
     // the differences between each other.
     if (instances.length > 0) {
-      const pos = types.indexOf('object');
+      const pos = types.indexOf("object");
       if (pos !== -1) {
         types.splice(pos, 1);
-        instances.push('Object');
+        instances.push("Object");
       }
     }
 
     if (types.length > 0) {
       if (types.length > 2) {
         const last = types.pop();
-        msg += `one of type ${types.join(', ')}, or ${last}`;
+        msg += `one of type ${types.join(", ")}, or ${last}`;
       } else if (types.length === 2) {
         msg += `one of type ${types[0]} or ${types[1]}`;
       } else {
         msg += `of type ${types[0]}`;
       }
-      if (instances.length > 0 || other.length > 0)
-        msg += ' or ';
+      if (instances.length > 0 || other.length > 0) msg += " or ";
     }
 
     if (instances.length > 0) {
       if (instances.length > 2) {
         const last = instances.pop();
-        msg +=
-          `an instance of ${instances.join(', ')}, or ${last}`;
+        msg += `an instance of ${instances.join(", ")}, or ${last}`;
       } else {
         msg += `an instance of ${instances[0]}`;
         if (instances.length === 2) {
           msg += ` or ${instances[1]}`;
         }
       }
-      if (other.length > 0)
-        msg += ' or ';
+      if (other.length > 0) msg += " or ";
     }
 
     if (other.length > 0) {
       if (other.length > 2) {
         const last = other.pop();
-        msg += `one of ${other.join(', ')}, or ${last}`;
+        msg += `one of ${other.join(", ")}, or ${last}`;
       } else if (other.length === 2) {
         msg += `one of ${other[0]} or ${other[1]}`;
       } else {
-        if (other[0].toLowerCase() !== other[0])
-          msg += 'an ';
+        if (other[0].toLowerCase() !== other[0]) msg += "an ";
         msg += `${other[0]}`;
       }
     }

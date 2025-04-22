@@ -1,7 +1,8 @@
 /*
- * Copyright Fastly, Inc.
+ * Copyright Michael Hart
  * Licensed under the MIT license. See LICENSE file for details.
  *
+ * Portions of this file Copyright Fastly, Inc. See LICENSE file for details.
  * Portions of this file Copyright Joyent, Inc. and other Node contributors. See LICENSE file for details.
  */
 
