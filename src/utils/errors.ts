@@ -54,6 +54,21 @@ function determineSpecificType(value: any) {
 // The following classes are adaptations of a subset of the ERR_* classes
 // declared in Node.js in the file - node/lib/internal/errors.js.
 
+export class ERR_HTTP_BODY_NOT_ALLOWED extends Error {
+  constructor() {
+    super(
+      "Adding content for this request method or response status is not allowed."
+    );
+  }
+}
+export class ERR_HTTP_CONTENT_LENGTH_MISMATCH extends Error {
+  constructor(actual: number, expected: number | null) {
+    super(
+      `Response body's content-length of ${actual} byte(s) does not match the content-length of ${expected} byte(s) set in header`
+    );
+  }
+}
+
 export class ERR_HTTP_HEADERS_SENT extends Error {
   constructor(arg: string) {
     super(`Cannot ${arg} headers after they are sent to the client`);

@@ -9,5 +9,5 @@
 /* These items copied from Node.js: node/lib/internal/streams/state.js. */
 
 export function getDefaultHighWaterMark(objectMode?: boolean) {
-  return objectMode ? 16 : 16 * 1024;
+  return objectMode ? 16 : 64 * 1024;
 }

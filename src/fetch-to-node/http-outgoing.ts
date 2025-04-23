@@ -18,6 +18,8 @@ import type {
 } from "node:http";
 
 import {
+  ERR_HTTP_BODY_NOT_ALLOWED,
+  ERR_HTTP_CONTENT_LENGTH_MISMATCH,
   ERR_HTTP_HEADERS_SENT,
   ERR_HTTP_INVALID_HEADER_VALUE,
   ERR_HTTP_TRAILER_INVALID,
@@ -41,37 +43,23 @@ import {
   chunkExpression as RE_TE_CHUNKED,
 } from "./http-common.js";
 
-const kCorked = Symbol("corked");
-const kUniqueHeaders = Symbol("kUniqueHeaders");
+/* These items copied from Node.js: node/lib/_http_outgoing.js. */
 
 function debug(format: string) {
   // console.log("http " + format);
 }
 
-/* These items copied from Node.js: node/lib/_http_outgoing.js. */
+const kCorked = Symbol("corked");
+const kChunkedBuffer = Symbol("kChunkedBuffer");
+const kChunkedLength = Symbol("kChunkedLength");
+const kUniqueHeaders = Symbol("kUniqueHeaders");
+const kBytesWritten = Symbol("kBytesWritten");
+const kErrored = Symbol("errored");
+const kHighWaterMark = Symbol("kHighWaterMark");
+const kRejectNonStandardBodyWrites = Symbol("kRejectNonStandardBodyWrites");
 
 const nop = () => {};
 const RE_CONN_CLOSE = /(?:^|\W)close(?:$|\W)/i;
-const HIGH_WATER_MARK = getDefaultHighWaterMark();
-
-function validateHeaderName(name: string) {
-  if (typeof name !== "string" || !name || !checkIsHttpToken(name)) {
-    throw new ERR_INVALID_HTTP_TOKEN("Header name", name);
-  }
-}
-
-function validateHeaderValue(
-  name: string,
-  value: number | string | ReadonlyArray<string> | undefined
-) {
-  if (value === undefined) {
-    throw new ERR_HTTP_INVALID_HEADER_VALUE(String(value), name);
-  }
-  if (checkInvalidHeaderChar(String(value))) {
-    debug(`Header "${name}" contains invalid characters`);
-    throw new ERR_INVALID_CHAR("header content", name);
-  }
-}
 
 // isCookieField performs a case-insensitive comparison of a provided string
 // against the word "cookie." As of V8 6.6 this is faster than handrolling or
@@ -80,12 +68,16 @@ function isCookieField(s: string) {
   return s.length === 6 && s.toLowerCase() === "cookie";
 }
 
+function isContentDispositionField(s: string) {
+  return s.length === 19 && s.toLowerCase() === "content-disposition";
+}
+
 type WriteCallback = (err?: Error) => void;
 
 type OutputData = {
-  data: string | Buffer | Uint8Array;
-  encoding: BufferEncoding | undefined;
-  callback: WriteCallback | undefined;
+  data: string | Buffer | Uint8Array | null;
+  encoding?: BufferEncoding | null;
+  callback?: WriteCallback | null;
 };
 
 type WrittenDataBufferEntry = OutputData & {
@@ -102,6 +94,7 @@ type WrittenDataBufferConstructorArgs = {
  */
 export class WrittenDataBuffer {
   [kCorked]: number = 0;
+  [kHighWaterMark]: number = getDefaultHighWaterMark();
   entries: WrittenDataBufferEntry[] = [];
   onWrite?: (index: number, entry: WrittenDataBufferEntry) => void;
 
@@ -111,8 +104,8 @@ export class WrittenDataBuffer {
 
   write(
     data: string | Uint8Array,
-    encoding?: BufferEncoding,
-    callback?: WriteCallback
+    encoding?: BufferEncoding | null,
+    callback?: WriteCallback | null
   ) {
     this.entries.push({
       data,
@@ -158,7 +151,7 @@ export class WrittenDataBuffer {
   }
 
   get writableHighWaterMark() {
-    return HIGH_WATER_MARK;
+    return this[kHighWaterMark];
   }
 
   get writableCorked() {
@@ -177,6 +170,11 @@ export type DataWrittenEvent = {
   entry: WrittenDataBufferEntry;
 };
 
+export type OutgoingMessageOptions = {
+  highWaterMark?: number | undefined;
+  rejectNonStandardBodyWrites?: boolean | undefined;
+};
+
 /**
  * This is an implementation of OutgoingMessage from Node.js intended to run in
  * a WinterTC runtime. The 'Writable' interface of this class is wired to an in-memory
@@ -188,15 +186,11 @@ export type DataWrittenEvent = {
  * Some code in this class is transplanted/adapted from node/lib/_http_outgoing.js
  */
 export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
-  // Queue that holds all currently pending data, until the response will be
-  // assigned to the socket (until it will its turn in the HTTP pipeline).
-  outputData: OutputData[] = [];
+  readonly req: IncomingMessage;
 
-  // `outputSize` is an approximate measure of how much data is queued on this
-  // response. `_onPendingData` will be invoked to update similar global
-  // per-connection counter. That counter will be used to pause/unpause the
-  // TCP socket and HTTP Parser and thus handle the backpressure.
-  outputSize = 0;
+  outputData: OutputData[];
+
+  outputSize: number;
 
   // Difference from Node.js -
   // `writtenHeaderBytes` is the number of bytes the header has taken.
@@ -205,59 +199,93 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
   // from the beginning of the stream when providing the outgoing stream.
   writtenHeaderBytes = 0;
 
-  chunkedEncoding: boolean = false;
-  finished: boolean = false;
-  readonly req: IncomingMessage;
-  sendDate: boolean = false;
-  shouldKeepAlive: boolean = true; // ??
-  useChunkedEncodingByDefault: boolean = false; // Not liked by viceroy? for now disabling
-
   _last: boolean;
+  chunkedEncoding: boolean;
+  shouldKeepAlive: boolean;
   maxRequestsOnConnectionReached: boolean;
   _defaultKeepAlive: boolean;
+  useChunkedEncodingByDefault: boolean;
+  sendDate: boolean;
   _removedConnection: boolean;
   _removedContLen: boolean;
   _removedTE: boolean;
 
+  strictContentLength: boolean;
+  [kBytesWritten]: number;
   _contentLength: number | null;
   _hasBody: boolean;
   _trailer: string;
   [kNeedDrain]: boolean;
 
+  finished: boolean;
   _headerSent: boolean;
   [kCorked]: number;
+  [kChunkedBuffer]: OutputData[];
+  [kChunkedLength]: number;
   _closed: boolean;
 
+  // Difference from Node.js -
+  // In Node.js, this is a socket object.
+  // [kSocket]: null;
   _header: string | null;
   [kOutHeaders]: Record<string, any> | null;
 
   _keepAliveTimeout: number;
+  _maxRequestsPerSocket: number | undefined;
 
   _onPendingData: (delta: number) => void;
 
   [kUniqueHeaders]: Set<string> | null;
+  [kErrored]: Error | null | undefined;
+  [kHighWaterMark]: number;
+  [kRejectNonStandardBodyWrites]: boolean;
 
   _writtenDataBuffer: WrittenDataBuffer = new WrittenDataBuffer({
     onWrite: this._onDataWritten.bind(this),
   });
 
-  constructor(req: IncomingMessage) {
+  constructor(req: IncomingMessage, options?: OutgoingMessageOptions) {
     super();
 
     this.req = req;
 
+    // Queue that holds all currently pending data, until the response will be
+    // assigned to the socket (until it will its turn in the HTTP pipeline).
+    this.outputData = [];
+
+    // `outputSize` is an approximate measure of how much data is queued on this
+    // response. `_onPendingData` will be invoked to update similar global
+    // per-connection counter. That counter will be used to pause/unpause the
+    // TCP socket and HTTP Parser and thus handle the backpressure.
+    this.outputSize = 0;
+
+    // Cannot assign to this.writable because it is a readonly property
+    // this.writable = true;
+    this.destroyed = false;
+
     this._last = false;
+    this.chunkedEncoding = false;
+    this.shouldKeepAlive = true;
     this.maxRequestsOnConnectionReached = false;
     this._defaultKeepAlive = true;
+    this.useChunkedEncodingByDefault = true;
+    this.sendDate = false;
     this._removedConnection = false;
     this._removedContLen = false;
     this._removedTE = false;
+
+    this.strictContentLength = false;
+    this[kBytesWritten] = 0;
     this._contentLength = null;
     this._hasBody = true;
     this._trailer = "";
     this[kNeedDrain] = false;
+
+    this.finished = false;
     this._headerSent = false;
     this[kCorked] = 0;
+    this[kChunkedBuffer] = [];
+    this[kChunkedLength] = 0;
     this._closed = false;
 
     this._header = null;
@@ -267,89 +295,12 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
 
     this._onPendingData = nop;
 
+    this[kErrored] = null;
+    this[kHighWaterMark] = options?.highWaterMark ?? getDefaultHighWaterMark();
+    this[kRejectNonStandardBodyWrites] =
+      options?.rejectNonStandardBodyWrites ?? false;
+
     this[kUniqueHeaders] = null;
-  }
-
-  get _headers() {
-    console.warn("DEP0066: OutgoingMessage.prototype._headers is deprecated");
-    return this.getHeaders();
-  }
-
-  set _headers(val) {
-    console.warn("DEP0066: OutgoingMessage.prototype._headers is deprecated");
-    if (val == null) {
-      this[kOutHeaders] = null;
-    } else if (typeof val === "object") {
-      const headers = (this[kOutHeaders] = Object.create(null));
-      const keys = Object.keys(val);
-      // Retain for(;;) loop for performance reasons
-      // Refs: https://github.com/nodejs/node/pull/30958
-      for (let i = 0; i < keys.length; ++i) {
-        const name = keys[i];
-        headers[name.toLowerCase()] = [name, val[name]];
-      }
-    }
-  }
-
-  get connection() {
-    // Difference from Node.js -
-    // Connection is not supported
-    return null;
-  }
-
-  set connection(_socket: any) {
-    // Difference from Node.js -
-    // Connection is not supported
-    console.error("No support for OutgoingMessage.connection");
-  }
-
-  get socket() {
-    // Difference from Node.js -
-    // socket is not supported
-    return null;
-  }
-
-  set socket(_socket: any) {
-    // Difference from Node.js -
-    // socket is not supported
-    console.error("No support for OutgoingMessage.socket");
-  }
-
-  get _headerNames() {
-    console.warn(
-      "DEP0066: OutgoingMessage.prototype._headerNames is deprecated"
-    );
-    const headers = this[kOutHeaders];
-    if (headers !== null) {
-      const out = Object.create(null);
-      const keys = Object.keys(headers);
-      // Retain for(;;) loop for performance reasons
-      // Refs: https://github.com/nodejs/node/pull/30958
-      for (let i = 0; i < keys.length; ++i) {
-        const key = keys[i];
-        const val = headers[key][0];
-        out[key] = val;
-      }
-      return out;
-    }
-    return null;
-  }
-
-  set _headerNames(val: any) {
-    console.warn(
-      "DEP0066: OutgoingMessage.prototype._headerNames is deprecated"
-    );
-    if (typeof val === "object" && val !== null) {
-      const headers = this[kOutHeaders];
-      if (!headers) return;
-      const keys = Object.keys(val);
-      // Retain for(;;) loop for performance reasons
-      // Refs: https://github.com/nodejs/node/pull/30958
-      for (let i = 0; i < keys.length; ++i) {
-        const header = headers[keys[i]];
-        if (header) header[0] = val[keys[i]];
-      }
-    }
   }
 
   _renderHeaders() {
@@ -376,11 +327,9 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
     // Difference from Node.js -
     // In Node.js, if a socket exists, we would call cork() on the socket instead
     // In our implementation, we do the same to the "written data buffer" instead.
-
+    this[kCorked]++;
     if (this._writtenDataBuffer != null) {
       this._writtenDataBuffer.cork();
-    } else {
-      this[kCorked]++;
     }
   }
 
@@ -388,12 +337,44 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
     // Difference from Node.js -
     // In Node.js, if a socket exists, we would call uncork() on the socket instead
     // In our implementation, we do the same to the "written data buffer" instead.
-
+    this[kCorked]--;
     if (this._writtenDataBuffer != null) {
       this._writtenDataBuffer.uncork();
-    } else {
-      this[kCorked]--;
     }
+
+    if (this[kCorked] || this[kChunkedBuffer].length === 0) {
+      return;
+    }
+
+    const len = this[kChunkedLength];
+    const buf = this[kChunkedBuffer];
+
+    // assert(this.chunkedEncoding);
+
+    let callbacks: (WriteCallback | undefined)[] | undefined;
+    this._send(len.toString(16), "latin1", null);
+    this._send(crlf_buf, null, null);
+    for (const { data, encoding, callback } of buf) {
+      this._send(data ?? "", encoding, null);
+      if (callback) {
+        callbacks ??= [];
+        callbacks.push(callback);
+      }
+    }
+    this._send(
+      crlf_buf,
+      null,
+      callbacks?.length
+        ? (err) => {
+            for (const callback of callbacks) {
+              callback?.(err);
+            }
+          }
+        : null
+    );
+
+    this[kChunkedBuffer].length = 0;
+    this[kChunkedLength] = 0;
   }
 
   setTimeout(msecs: number, callback?: () => void): this {
@@ -411,6 +392,8 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
     }
     this.destroyed = true;
 
+    this[kErrored] = error;
+
     // Difference from Node.js -
     // In Node.js, we would also attempt to destroy the underlying socket.
     return this;
@@ -418,8 +401,9 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
 
   _send(
     data: string | Uint8Array,
-    encoding?: BufferEncoding | WriteCallback,
-    callback?: WriteCallback
+    encoding?: BufferEncoding | WriteCallback | null,
+    callback?: WriteCallback | null,
+    byteLength?: number
   ) {
     // This is a shameful hack to get the headers and first body chunk onto
     // the same packet. Future versions of Node are going to take care of
@@ -440,6 +424,11 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
         this.outputSize += header.length;
         this._onPendingData(header.length);
       }
+      this._headerSent = true;
+
+      // Difference from Node.js -
+      // Parse headers here and trigger _headersSent
+
       this.writtenHeaderBytes = header.length;
 
       // Save written headers as object
@@ -466,11 +455,6 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
           headers.push([k, v]);
         }
       }
-
-      this._headerSent = true;
-
-      // Difference from Node.js -
-      // After headers are 'sent', we trigger an event
       const event: HeadersSentEvent = {
         statusCode,
         statusMessage,
@@ -478,29 +462,22 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
       };
       this.emit("_headersSent", event);
     }
-    return this._writeRaw(data, encoding, callback);
-  }
-
-  _onDataWritten(index: number, entry: WrittenDataBufferEntry) {
-    const event: DataWrittenEvent = { index, entry };
-    this.emit("_dataWritten", event);
+    return this._writeRaw(data, encoding, callback, byteLength);
   }
 
   _writeRaw(
     data: string | Uint8Array,
-    encoding?: BufferEncoding | WriteCallback,
-    callback?: WriteCallback
+    encoding?: BufferEncoding | WriteCallback | null,
+    callback?: WriteCallback | null,
+    size?: number
   ) {
     // Difference from Node.js -
     // In Node.js, we would check for an underlying socket, and if that socket
     // exists and is already destroyed, simply return false.
 
-    let e: BufferEncoding | undefined;
     if (typeof encoding === "function") {
       callback = encoding;
-      e = undefined;
-    } else {
-      e = encoding;
+      encoding = null;
     }
 
     // Difference from Node.js -
@@ -516,14 +493,19 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
         this._flushOutput(this._writtenDataBuffer);
       }
       // Directly write to the buffer.
-      return this._writtenDataBuffer.write(data, e, callback);
+      return this._writtenDataBuffer.write(data, encoding, callback);
     }
 
     // Buffer, as long as we're not destroyed.
-    this.outputData.push({ data, encoding: e, callback });
+    this.outputData.push({ data, encoding, callback });
     this.outputSize += data.length;
     this._onPendingData(data.length);
-    return this.outputSize < HIGH_WATER_MARK;
+    return this.outputSize < this[kHighWaterMark];
+  }
+
+  _onDataWritten(index: number, entry: WrittenDataBufferEntry) {
+    const event: DataWrittenEvent = { index, entry };
+    this.emit("_dataWritten", event);
   }
 
   _storeHeader(
@@ -615,8 +597,9 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
 
     // keep-alive logic
     if (this._removedConnection) {
-      this._last = true;
-      this.shouldKeepAlive = false;
+      // shouldKeepAlive is generally true for HTTP/1.1. In that common case,
+      // even if the connection header isn't sent, we still persist by default.
+      this._last = !this.shouldKeepAlive;
     } else if (!state.connection) {
       // this.agent would only exist on class ClientRequest
       const shouldSendKeepAlive =
@@ -628,7 +611,11 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
         header += "Connection: keep-alive\r\n";
         if (this._keepAliveTimeout && this._defaultKeepAlive) {
           const timeoutSeconds = Math.floor(this._keepAliveTimeout / 1000);
-          header += `Keep-Alive: timeout=${timeoutSeconds}\r\n`;
+          let max = "";
+          if (this._maxRequestsPerSocket && ~~this._maxRequestsPerSocket > 0) {
+            max = `, max=${this._maxRequestsPerSocket}`;
+          }
+          header += `Keep-Alive: timeout=${timeoutSeconds}${max}\r\n`;
         }
       } else {
         this._last = true;
@@ -656,6 +643,10 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
         // Transfer-Encoding are removed by the user.
         // See: test/parallel/test-http-remove-header-stays-removed.js
         debug("Both Content-Length and Transfer-Encoding are removed");
+
+        // We can't keep alive in this case, because with no header info the body
+        // is defined as all data until the connection is closed.
+        this._last = true;
       }
     }
 
@@ -677,6 +668,88 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
     }
   }
 
+  get _headers() {
+    console.warn("DEP0066: OutgoingMessage.prototype._headers is deprecated");
+    return this.getHeaders();
+  }
+
+  set _headers(val) {
+    console.warn("DEP0066: OutgoingMessage.prototype._headers is deprecated");
+    if (val == null) {
+      this[kOutHeaders] = null;
+    } else if (typeof val === "object") {
+      const headers = (this[kOutHeaders] = Object.create(null));
+      const keys = Object.keys(val);
+      // Retain for(;;) loop for performance reasons
+      // Refs: https://github.com/nodejs/node/pull/30958
+      for (let i = 0; i < keys.length; ++i) {
+        const name = keys[i];
+        headers[name.toLowerCase()] = [name, val[name]];
+      }
+    }
+  }
+
+  get connection() {
+    // Difference from Node.js -
+    // Connection is not supported
+    return null;
+  }
+
+  set connection(_socket: any) {
+    // Difference from Node.js -
+    // Connection is not supported
+    console.error("No support for OutgoingMessage.connection");
+  }
+
+  get socket() {
+    // Difference from Node.js -
+    // socket is not supported
+    return null;
+  }
+
+  set socket(_socket: any) {
+    // Difference from Node.js -
+    // socket is not supported
+    console.error("No support for OutgoingMessage.socket");
+  }
+
+  get _headerNames() {
+    console.warn(
+      "DEP0066: OutgoingMessage.prototype._headerNames is deprecated"
+    );
+    const headers = this[kOutHeaders];
+    if (headers !== null) {
+      const out = Object.create(null);
+      const keys = Object.keys(headers);
+      // Retain for(;;) loop for performance reasons
+      // Refs: https://github.com/nodejs/node/pull/30958
+      for (let i = 0; i < keys.length; ++i) {
+        const key = keys[i];
+        const val = headers[key][0];
+        out[key] = val;
+      }
+      return out;
+    }
+    return null;
+  }
+
+  set _headerNames(val: any) {
+    console.warn(
+      "DEP0066: OutgoingMessage.prototype._headerNames is deprecated"
+    );
+    if (typeof val === "object" && val !== null) {
+      const headers = this[kOutHeaders];
+      if (!headers) return;
+      const keys = Object.keys(val);
+      // Retain for(;;) loop for performance reasons
+      // Refs: https://github.com/nodejs/node/pull/30958
+      for (let i = 0; i < keys.length; ++i) {
+        const header = headers[keys[i]];
+        if (header) header[0] = val[keys[i]];
+      }
+    }
+  }
+
   setHeader(
     name: string,
     value: number | string | ReadonlyArray<string>
@@ -689,19 +762,52 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
 
     let headers = this[kOutHeaders];
     if (headers === null) {
-      this[kOutHeaders] = headers = Object.create(null);
+      this[kOutHeaders] = headers = { __proto__: null };
     }
 
-    headers![name.toLowerCase()] = [name, value];
+    headers[name.toLowerCase()] = [name, value];
     return this;
   }
 
   setHeaders(
     headers: Headers | Map<string, number | string | readonly string[]>
   ): this {
-    for (const [name, value] of headers) {
-      this.setHeader(name, value);
+    if (this._header) {
+      throw new ERR_HTTP_HEADERS_SENT("set");
     }
+
+    if (
+      !headers ||
+      Array.isArray(headers) ||
+      typeof headers.keys !== "function" ||
+      typeof headers.get !== "function"
+    ) {
+      throw new ERR_INVALID_ARG_TYPE("headers", ["Headers", "Map"], headers);
+    }
+
+    // Headers object joins multiple cookies with a comma when using
+    // the getter to retrieve the value,
+    // unless iterating over the headers directly.
+    // We also cannot safely split by comma.
+    // To avoid setHeader overwriting the previous value we push
+    // set-cookie values in array and set them all at once.
+    const cookies = [];
+
+    for (const { 0: key, 1: value } of headers) {
+      if (key === "set-cookie") {
+        if (Array.isArray(value)) {
+          cookies.push(...value);
+        } else {
+          cookies.push(value);
+        }
+        continue;
+      }
+      this.setHeader(key, value);
+    }
+    if (cookies.length) {
+      this.setHeader("set-cookie", cookies);
+    }
+
     return this;
   }
 
@@ -740,11 +846,11 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
 
     const headers = this[kOutHeaders];
     if (headers === null) {
-      return undefined;
+      return;
     }
 
     const entry = headers[name.toLowerCase()];
-    return entry && entry[1];
+    return entry?.[1];
   }
 
   getHeaderNames(): string[] {
@@ -768,7 +874,7 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
 
   getHeaders(): OutgoingHttpHeaders {
     const headers = this[kOutHeaders];
-    const ret = Object.create(null);
+    const ret = { __proto__: null } as any;
     if (headers) {
       const keys = Object.keys(headers);
       // Retain for(;;) loop for performance reasons
@@ -828,20 +934,15 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
 
   override write(
     chunk: string | Buffer | Uint8Array,
-    encoding?: BufferEncoding | WriteCallback,
+    encoding?: BufferEncoding | WriteCallback | null,
     callback?: WriteCallback
   ): boolean {
-    debug("write called");
-
-    let e: BufferEncoding | undefined;
     if (typeof encoding === "function") {
       callback = encoding;
-      e = undefined;
-    } else {
-      e = encoding;
+      encoding = null;
     }
 
-    const ret = write_(this, chunk, e, callback, false);
+    const ret = write_(this, chunk, encoding, callback, false);
     if (!ret) {
       this[kNeedDrain] = true;
     }
@@ -870,9 +971,7 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
         field = key;
         value = _headers[key];
       }
-      if (!field || !checkIsHttpToken(field)) {
-        throw new ERR_INVALID_HTTP_TOKEN("Trailer name", field);
-      }
+      validateHeaderName(field, "Trailer name");
 
       // Check if the field must be sent several times
       if (
@@ -891,11 +990,9 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
       } else {
         if (Array.isArray(value)) {
           value = value.join("; ");
-        } else {
-          value = String(value);
         }
 
-        if (checkInvalidHeaderChar(value)) {
+        if (checkInvalidHeaderChar(String(value))) {
           debug(`Trailer "${field}" contains invalid characters`);
           throw new ERR_INVALID_CHAR("trailer content", field);
         }
@@ -905,26 +1002,20 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
   }
 
   override end(
-    chunk?: string | Buffer | Uint8Array | WriteCallback,
-    encoding?: BufferEncoding | WriteCallback,
+    chunk?: string | Buffer | Uint8Array | WriteCallback | null,
+    encoding?: BufferEncoding | WriteCallback | null,
     callback?: WriteCallback
   ) {
-    let ch: string | Buffer | Uint8Array | undefined;
-    let e: BufferEncoding | undefined;
     if (typeof chunk === "function") {
       callback = chunk;
-      ch = undefined;
-      e = undefined;
+      chunk = null;
+      encoding = null;
     } else if (typeof encoding === "function") {
       callback = encoding;
-      ch = chunk;
-      e = undefined;
-    } else {
-      ch = chunk;
-      e = encoding;
+      encoding = null;
     }
 
-    if (ch) {
+    if (chunk) {
       if (this.finished) {
         onError(
           this,
@@ -940,7 +1031,7 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
       if (this._writtenDataBuffer != null) {
         this._writtenDataBuffer.cork();
       }
-      write_(this, ch, e, undefined, true);
+      write_(this, chunk, encoding, null, true);
     } else if (this.finished) {
       if (typeof callback === "function") {
         if (!this.writableFinished) {
@@ -963,11 +1054,21 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
 
     if (typeof callback === "function") this.once("finish", callback);
 
+    if (
+      strictContentLength(this) &&
+      this[kBytesWritten] !== this._contentLength
+    ) {
+      throw new ERR_HTTP_CONTENT_LENGTH_MISMATCH(
+        this[kBytesWritten],
+        this._contentLength
+      );
+    }
+
     const finish = onFinish.bind(undefined, this);
 
     if (this._hasBody && this.chunkedEncoding) {
       this._send("0\r\n" + this._trailer + "\r\n", "latin1", finish);
-    } else if (!this._headerSent || this.writableLength || ch) {
+    } else if (!this._headerSent || this.writableLength || chunk) {
       this._send("", "latin1", finish);
     } else {
       setTimeout(finish, 0);
@@ -979,18 +1080,19 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
     if (this._writtenDataBuffer != null) {
       this._writtenDataBuffer.uncork();
     }
-    this[kCorked] = 0;
+    this[kCorked] = 1;
+    this.uncork();
 
     this.finished = true;
 
     // There is the first message on the outgoing queue, and we've sent
     // everything to the socket.
     debug("outgoing message end.");
+
     // Difference from Node.js -
     // In Node.js, if a socket exists, and there is no pending output data,
     // we would also call this._finish() at this point.
     // For our implementation we do the same for the "written data buffer"
-
     if (this.outputData.length === 0 && this._writtenDataBuffer != null) {
       this._finish();
     }
@@ -1006,6 +1108,26 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
     this.emit("prefinish");
   }
 
+  // No _flush() implementation?
+
+  _flush() {
+    // Difference from Node.js -
+    // In Node.js, this function is only called if a socket exists.
+    // For our implementation we do the same for the "written data buffer"
+    if (this._writtenDataBuffer != null) {
+      // There might be remaining data in this.output; write it out
+      const ret = this._flushOutput(this._writtenDataBuffer);
+
+      if (this.finished) {
+        // This is a queue to the server or client to bring in the next this.
+        this._finish();
+      } else if (ret && this[kNeedDrain]) {
+        this[kNeedDrain] = false;
+        this.emit("drain");
+      }
+    }
+  }
+
   _flushOutput(dataBuffer: WrittenDataBuffer) {
     while (this[kCorked]) {
       this[kCorked]--;
@@ -1013,7 +1135,9 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
     }
 
     const outputLength = this.outputData.length;
-    if (outputLength <= 0) return undefined;
+    if (outputLength <= 0) {
+      return undefined;
+    }
 
     const outputData = this.outputData;
     dataBuffer.cork();
@@ -1021,8 +1145,9 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
     // Retain for(;;) loop for performance reasons
     // Refs: https://github.com/nodejs/node/pull/30958
     for (let i = 0; i < outputLength; i++) {
-      const { data, encoding, callback } = outputData[i];
-      ret = dataBuffer.write(data, encoding, callback);
+      const { data, encoding, callback } = outputData[i]; // Avoid any potential ref to Buffer in new generation from old generation
+      outputData[i].data = null;
+      ret = dataBuffer.write(data ?? "", encoding, callback);
     }
     dataBuffer.uncork();
 
@@ -1069,6 +1194,22 @@ function processHeader(
   if (validate) {
     validateHeaderName(key);
   }
+
+  // If key is content-disposition and there is content-length
+  // encode the value in latin1
+  // https://www.rfc-editor.org/rfc/rfc6266#section-4.3
+  // Refs: https://github.com/nodejs/node/pull/46528
+  if (isContentDispositionField(key) && self._contentLength) {
+    // The value could be an array here
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) {
+        value[i] = String(Buffer.from(String(value[i]), "latin1"));
+      }
+    } else {
+      value = String(Buffer.from(String(value), "latin1"));
+    }
+  }
+
   if (Array.isArray(value)) {
     if (
       (value.length < 2 || !isCookieField(key)) &&
@@ -1100,6 +1241,25 @@ function storeHeader(
   matchHeader(self, state, key, value);
 }
 
+function validateHeaderName(name: string, label?: string) {
+  if (typeof name !== "string" || !name || !checkIsHttpToken(name)) {
+    throw new ERR_INVALID_HTTP_TOKEN(label || "Header name", name);
+  }
+}
+
+function validateHeaderValue(
+  name: string,
+  value: number | string | ReadonlyArray<string> | undefined
+) {
+  if (value === undefined) {
+    throw new ERR_HTTP_INVALID_HEADER_VALUE(String(value), name);
+  }
+  if (checkInvalidHeaderChar(String(value))) {
+    debug(`Header "${name}" contains invalid characters`);
+    throw new ERR_INVALID_CHAR("header content", name);
+  }
+}
+
 function matchHeader(
   self: FetchOutgoingMessage,
   state: HeaderState,
@@ -1122,6 +1282,7 @@ function matchHeader(
       break;
     case "content-length":
       state.contLen = true;
+      self._contentLength = +value;
       self._removedContLen = false;
       break;
     case "date":
@@ -1142,6 +1303,10 @@ function onError(
   err: Error,
   callback: WriteCallback
 ) {
+  if (msg.destroyed) {
+    return;
+  }
+
   // Difference from Node.js -
   // In Node.js, we would check for the existence of a socket. If one exists, we would
   // use that async ID to scope the error.
@@ -1155,34 +1320,36 @@ function emitErrorNt(
   callback: WriteCallback
 ) {
   callback(err);
-  if (typeof msg.emit === "function" && !msg._closed) {
+  if (typeof msg.emit === "function" && !msg.destroyed) {
     msg.emit("error", err);
   }
+}
+
+function strictContentLength(msg: FetchOutgoingMessage) {
+  return (
+    msg.strictContentLength &&
+    msg._contentLength != null &&
+    msg._hasBody &&
+    !msg._removedContLen &&
+    !msg.chunkedEncoding &&
+    !msg.hasHeader("transfer-encoding")
+  );
 }
 
 function write_(
   msg: FetchOutgoingMessage,
   chunk: string | Buffer | Uint8Array,
-  encoding: BufferEncoding | undefined,
-  callback: WriteCallback | undefined,
+  encoding: BufferEncoding | undefined | null,
+  callback: WriteCallback | undefined | null,
   fromEnd: boolean
 ) {
-  debug("write_");
-
   if (typeof callback !== "function") {
     callback = nop;
   }
 
-  let len: number;
   if (chunk === null) {
-    debug("ERR_STREAM_NULL_VALUES");
     throw new ERR_STREAM_NULL_VALUES();
-  } else if (typeof chunk === "string") {
-    len = Buffer.byteLength(chunk, encoding ?? undefined);
-  } else if (isUint8Array(chunk)) {
-    len = chunk.length;
-  } else {
-    debug("ERR_INVALID_ARG_TYPE");
+  } else if (typeof chunk !== "string" && !isUint8Array(chunk)) {
     throw new ERR_INVALID_ARG_TYPE(
       "chunk",
       ["string", "Buffer", "Uint8Array"],
@@ -1198,7 +1365,6 @@ function write_(
   }
 
   if (err) {
-    debug("err:" + err);
     if (!msg.destroyed) {
       onError(msg, err, callback);
     } else {
@@ -1207,21 +1373,51 @@ function write_(
     return false;
   }
 
+  let len: number | undefined = undefined;
+
+  if (msg.strictContentLength) {
+    len ??=
+      typeof chunk === "string"
+        ? Buffer.byteLength(chunk, encoding ?? undefined)
+        : chunk.byteLength;
+
+    if (
+      strictContentLength(msg) &&
+      (fromEnd
+        ? msg[kBytesWritten] + len !== msg._contentLength
+        : msg[kBytesWritten] + len > (msg._contentLength ?? 0))
+    ) {
+      throw new ERR_HTTP_CONTENT_LENGTH_MISMATCH(
+        len + msg[kBytesWritten],
+        msg._contentLength
+      );
+    }
+
+    msg[kBytesWritten] += len;
+  }
+
   if (!msg._header) {
-    debug("!msg._header");
     if (fromEnd) {
+      len ??=
+        typeof chunk === "string"
+          ? Buffer.byteLength(chunk, encoding ?? undefined)
+          : chunk.byteLength;
       msg._contentLength = len;
     }
     msg._implicitHeader();
   }
 
   if (!msg._hasBody) {
-    debug("!msg._hasBody");
-    debug(
-      "This type of response MUST NOT have a body. " + "Ignoring write() calls."
-    );
-    setTimeout(callback, 0);
-    return true;
+    if (msg[kRejectNonStandardBodyWrites]) {
+      throw new ERR_HTTP_BODY_NOT_ALLOWED();
+    } else {
+      debug(
+        "This type of response MUST NOT have a body. " +
+          "Ignoring write() calls."
+      );
+      setTimeout(callback, 0);
+      return true;
+    }
   }
 
   // Difference from Node.js -
@@ -1233,19 +1429,28 @@ function write_(
     msg._writtenDataBuffer != null &&
     !msg._writtenDataBuffer.writableCorked
   ) {
-    debug("msg._writtenDataBuffer.cork()");
     msg._writtenDataBuffer.cork();
     setTimeout(connectionCorkNT, 0, msg._writtenDataBuffer);
   }
 
   let ret;
   if (msg.chunkedEncoding && chunk.length !== 0) {
-    msg._send(len.toString(16), "latin1", undefined);
-    msg._send(crlf_buf, undefined, undefined);
-    msg._send(chunk, encoding, undefined);
-    ret = msg._send(crlf_buf, undefined, callback);
+    len ??=
+      typeof chunk === "string"
+        ? Buffer.byteLength(chunk, encoding ?? undefined)
+        : chunk.byteLength;
+    if (msg[kCorked] && msg._headerSent) {
+      msg[kChunkedBuffer].push({ data: chunk, encoding, callback });
+      msg[kChunkedLength] += len;
+      ret = msg[kChunkedLength] < msg[kHighWaterMark];
+    } else {
+      msg._send(len.toString(16), "latin1", null);
+      msg._send(crlf_buf, null, null);
+      msg._send(chunk, encoding, null, len);
+      ret = msg._send(crlf_buf, null, callback);
+    }
   } else {
-    ret = msg._send(chunk, encoding, callback);
+    ret = msg._send(chunk, encoding, callback, len);
   }
 
   debug("write ret = " + ret);
@@ -1265,6 +1470,16 @@ function onFinish(outmsg: FetchOutgoingMessage) {
 // Override some properties this way, because TypeScript won't let us override
 // properties with accessors.
 Object.defineProperties(FetchOutgoingMessage.prototype, {
+  errored: {
+    get() {
+      return this[kErrored];
+    },
+  },
+  closed: {
+    get() {
+      return this._closed;
+    },
+  },
   writableFinished: {
     get() {
       // Difference from Node.js -
@@ -1292,6 +1507,7 @@ Object.defineProperties(FetchOutgoingMessage.prototype, {
       // In this implementation we will do the same against "written data buffer".
       return (
         this.outputSize +
+        this[kChunkedLength] +
         (this._writtenDataBuffer != null
           ? this._writtenDataBuffer.writableLength
           : 0)
@@ -1301,29 +1517,16 @@ Object.defineProperties(FetchOutgoingMessage.prototype, {
   writableHighWaterMark: {
     get() {
       // Difference from Node.js -
-      // In Node.js, if a socket exists then that socket's writableHighWaterMark is added to
-      // this value.
+      // In Node.js, if a socket exists then use that socket's writableHighWaterMark
       // In this implementation we will do the same against "written data buffer".
-      return (
-        HIGH_WATER_MARK +
-        (this._writtenDataBuffer != null
-          ? this._writtenDataBuffer.writableHighWaterMark
-          : 0)
-      );
+      return this._writtenDataBuffer != null
+        ? this._writtenDataBuffer.writableHighWaterMark
+        : this[kHighWaterMark];
     },
   },
   writableCorked: {
     get() {
-      // Difference from Node.js -
-      // In Node.js, if a socket exists then that socket's writableCorked is added to
-      // this value.
-      // In this implementation we will do the same against "written data buffer".
-      return (
-        this[kCorked] +
-        (this._writtenDataBuffer != null
-          ? this._writtenDataBuffer.writableCorked
-          : 0)
-      );
+      return this[kCorked];
     },
   },
   writableEnded: {

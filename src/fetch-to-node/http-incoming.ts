@@ -59,11 +59,10 @@ export class FetchIncomingMessage extends Readable implements IncomingMessage {
   [kTrailersDistinct]: Record<string, string[]> | null = null;
   [kTrailersCount]: number = 0;
   rawTrailers: string[] = [];
+  joinDuplicateHeaders: boolean = false;
 
   aborted: boolean = false;
 
-  // A flag that seems to indicate this is an upgrade request
-  // TODO: someday?
   upgrade: boolean = false;
 
   // request (server) only
@@ -250,7 +249,7 @@ export class FetchIncomingMessage extends Readable implements IncomingMessage {
   }
 
   _addHeaderLines(headers: string[], n: number) {
-    if (headers && headers.length) {
+    if (headers?.length) {
       let dest;
       if (this.complete) {
         this.rawTrailers = headers;
@@ -270,6 +269,15 @@ export class FetchIncomingMessage extends Readable implements IncomingMessage {
     }
   }
 
+  // Add the given (field, value) pair to the message
+  //
+  // Per RFC2616, section 4.2 it is acceptable to join multiple instances of the
+  // same header with a ', ' if the header in question supports specification of
+  // multiple values this way. The one exception to this is the Cookie header,
+  // which has multiple values joined with a '; ' instead. If a header's values
+  // cannot be joined in either of these ways, we declare the first instance the
+  // winner and drop the second. Extended header fields (those beginning with
+  // 'x-') are always joined.
   _addHeaderLine(field: string, value: string, dest: IncomingHttpHeaders) {
     field = matchKnownFields(field);
     const flag = field.charCodeAt(0);
@@ -288,6 +296,16 @@ export class FetchIncomingMessage extends Readable implements IncomingMessage {
       } else {
         dest["set-cookie"] = [value];
       }
+    } else if (this.joinDuplicateHeaders) {
+      // RFC 9110 https://www.rfc-editor.org/rfc/rfc9110#section-5.2
+      // https://github.com/nodejs/node/issues/45699
+      // allow authorization multiple fields
+      // Make a delimited list
+      if (dest[field] === undefined) {
+        dest[field] = value;
+      } else {
+        dest[field] += ", " + value;
+      }
     } else if (dest[field] === undefined) {
       // Drop duplicates
       dest[field] = value;
@@ -304,6 +322,18 @@ export class FetchIncomingMessage extends Readable implements IncomingMessage {
       dest[field] = [value];
     } else {
       dest[field].push(value);
+    }
+  }
+
+  // Call this instead of resume() if we want to just
+  // dump all the data to /dev/null
+  _dump() {
+    if (!this._dumped) {
+      this._dumped = true;
+      // If there is buffered data, it may trigger 'data' events.
+      // Remove 'data' event listeners explicitly.
+      this.removeAllListeners("data");
+      this.resume();
     }
   }
 }

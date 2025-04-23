@@ -6,8 +6,6 @@
  * Portions of this file Copyright Joyent, Inc. and other Node contributors. See LICENSE file for details.
  */
 
-// This file modeled after Node.js - node/lib/_http_server.js
-
 import { Buffer } from "node:buffer";
 import type {
   IncomingMessage,
@@ -28,10 +26,12 @@ import {
   FetchOutgoingMessage,
   DataWrittenEvent,
   HeadersSentEvent,
+  OutgoingMessageOptions,
 } from "./http-outgoing.js";
 import { chunkExpression } from "./http-common.js";
 import { FetchIncomingMessage } from "./http-incoming.js";
 import { kOutHeaders } from "./internal-http.js";
+import { validateLinkHeaderValue } from "../utils/types.js";
 
 /* These items copied from Node.js: node/lib/_http_common.js. */
 
@@ -43,8 +43,10 @@ const headerCharRegex = /[^\t\x20-\x7e\x80-\xff]/;
  *  field-vchar    = VCHAR / obs-text
  */
 function checkInvalidHeaderChar(val: string): boolean {
-  return headerCharRegex.exec(val) !== null;
+  return headerCharRegex.test(val);
 }
+
+// This file modeled after Node.js - node/lib/_http_server.js
 
 export const STATUS_CODES: Record<number, string> = {
   100: "Continue", // RFC 7231 6.2.1
@@ -141,8 +143,8 @@ export class FetchServerResponse
 
   override [kOutHeaders]: Record<string, any> | null = null;
 
-  constructor(req: IncomingMessage) {
-    super(req);
+  constructor(req: IncomingMessage, options?: OutgoingMessageOptions) {
+    super(req, options);
 
     if (req.method === "HEAD") {
       this._hasBody = false;
@@ -218,11 +220,11 @@ export class FetchServerResponse
       ) {
         data = FetchServerResponse.encoder.encode(data);
       } else {
-        data = Buffer.from(data, encoding);
+        data = Buffer.from(data, encoding ?? undefined);
       }
     }
 
-    return data;
+    return data ?? Buffer.from([]);
   }
 
   override _finish() {
@@ -252,6 +254,39 @@ export class FetchServerResponse
     this._writeRaw("HTTP/1.1 102 Processing\r\n\r\n", "ascii", callback);
   }
 
+  writeEarlyHints(
+    hints: Record<string, string | string[]>,
+    callback?: () => void
+  ): void {
+    let head = "HTTP/1.1 103 Early Hints\r\n";
+
+    // Difference from Node.js -
+    // In Node.js, we would validate the hints object here.
+    // validateObject(hints, 'hints');
+
+    if (hints.link === null || hints.link === undefined) {
+      return;
+    }
+
+    const link = validateLinkHeaderValue(hints.link);
+
+    if (link.length === 0) {
+      return;
+    }
+
+    head += "Link: " + link + "\r\n";
+
+    for (const key of Object.keys(hints)) {
+      if (key !== "link") {
+        head += key + ": " + hints[key] + "\r\n";
+      }
+    }
+
+    head += "\r\n";
+
+    this._writeRaw(head, "ascii", callback);
+  }
+
   override _implicitHeader() {
     this.writeHead(this.statusCode);
   }
@@ -261,6 +296,10 @@ export class FetchServerResponse
     reason?: string | OutgoingHttpHeaders | OutgoingHttpHeader[],
     obj?: OutgoingHttpHeaders | OutgoingHttpHeader[]
   ): this {
+    if (this._header) {
+      throw new ERR_HTTP_HEADERS_SENT("write");
+    }
+
     const originalStatusCode = statusCode;
 
     statusCode |= 0;
@@ -269,15 +308,12 @@ export class FetchServerResponse
     }
 
     if (typeof reason === "string") {
-      // This means this was called as:
       // writeHead(statusCode, reasonPhrase[, headers])
       this.statusMessage = reason;
     } else {
-      // This means this was called as:
       // writeHead(statusCode[, headers])
-      if (!this.statusMessage)
-        this.statusMessage = STATUS_CODES[statusCode] || "unknown";
-      obj = reason;
+      this.statusMessage ||= STATUS_CODES[statusCode] || "unknown";
+      obj ??= reason;
     }
     this.statusCode = statusCode;
 
@@ -290,10 +326,19 @@ export class FetchServerResponse
           throw new ERR_INVALID_ARG_VALUE("headers", obj);
         }
 
+        // Headers in obj should override previous headers but still
+        // allow explicit duplicates. To do so, we first remove any
+        // existing conflicts, then use appendHeader.
+
+        for (let n = 0; n < obj.length; n += 2) {
+          k = obj[n + 0];
+          this.removeHeader(String(k));
+        }
+
         for (let n = 0; n < obj.length; n += 2) {
           k = obj[n];
           if (k) {
-            this.setHeader(k as string, obj[n + 1]);
+            this.appendHeader(String(k), obj[n + 1]);
           }
         }
       } else if (obj) {
@@ -306,9 +351,6 @@ export class FetchServerResponse
             this.setHeader(k, obj[k]!);
           }
         }
-      }
-      if (k === undefined && this._header) {
-        throw new ERR_HTTP_HEADERS_SENT("render");
       }
       // Only progressive api is used
       headers = this[kOutHeaders];
@@ -357,6 +399,7 @@ export class FetchServerResponse
     return this;
   }
 
+  // Docs-only deprecated: DEP0063
   writeHeader = this.writeHead;
 
   fetchResponse: Promise<Response>;
@@ -405,19 +448,6 @@ export class FetchServerResponse
       statusText,
       headers,
     });
-  }
-
-  // Difference from Node.js -
-  // This is ignored
-  strictContentLength: boolean = false;
-
-  writeEarlyHints(
-    hints: Record<string, string | string[]>,
-    callback?: () => void
-  ): void {
-    // Difference from Node.js -
-    // Early hint responses are not supported
-    throw new ERR_METHOD_NOT_IMPLEMENTED("writeEarlyHints");
   }
 }
 
