@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2025-04-26
+
+### Changed
+
+- Bring codebase up to date with latest Node.js source (~v22.15.0)
+- Fix chunked encoding support
+- Add FixedLengthStream for responses with a content-length header
+
 ## [2.0.0] - 2025-04-23
 
 ### Changed
@@ -16,5 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Changed all `process.nextTick` usages to `setTimeout`
 - Implemented the latest Node.js http interfaces
 
-[unreleased]: https://github.com/mhart/fetch-to-node/compare/v2.0.0...HEAD
+[unreleased]: https://github.com/mhart/fetch-to-node/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/mhart/fetch-to-node/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/mhart/fetch-to-node/releases/tag/v2.0.0
