@@ -3,9 +3,11 @@
 A library providing Node.js-compatible request and response objects for [WinterTC](https://wintertc.org) (`fetch`-like) runtimes,
 such as Cloudflare Workers, Bun, Deno and Fastly Compute.
 
-Useful for when you're using a Node.js library in one of these environments that expects Node.js-style `req` and `res` objects
-(and basically the inverse of libraries like [`@mjackson/node-fetch-server`](https://github.com/mjackson/remix-the-web/tree/main/packages/node-fetch-server#readme)
-that allow the use of `Request`/`Response` signatures in Node.js servers).
+Useful for when you're using a Node.js library in one of these environments that expects Node.js-style `req` and `res` objects,
+for example [Express](https://expressjs.com/).
+
+This is basically the inverse of libraries like [`@mjackson/node-fetch-server`](https://github.com/mjackson/remix-the-web/tree/main/packages/node-fetch-server#readme)
+that allow the use of `Request`/`Response` signatures in Node.js servers.
 
 This library is a copy/fork of [Katsuyuki Omuro's](https://github.com/harmony7) great [@fastly/http-compute-js](https://github.com/fastly/http-compute-js)
 project and wouldn't be possible without the hard work put in there. The changes here were largely made to remove dependencies and make the interfaces more generic.
@@ -76,7 +78,8 @@ can be used as in a Node.js program.
 - HTTP Version is currently always reported as `1.1`.
 - The `socket` property of these objects is always `null`, and cannot be assigned.
 - The `ServerResponse` write stream must be finished before the `Response` object is generated.
-- Not supported: `http.Agent`, `http.ClientRequest`, `http.get()`, `http.request()`, to name a few.
+- Trailers are not supported, as [there's no support for these in the fetch API](https://github.com/whatwg/fetch/issues/981).
+- Client APIs not supported: `http.Agent`, `http.ClientRequest`, `http.get()`, `http.request()`, to name a few.
 
 ## License
 

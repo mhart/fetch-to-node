@@ -346,32 +346,38 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
       return;
     }
 
-    const len = this[kChunkedLength];
+    // Difference from Node.js -
+    // Chunked transfer encoding doesn't need to use the low-level protocol
+    // (with each chunk preceded by its length)
+    // All commented out code below is from Node.js used for this purpose.
+
+    // const len = this[kChunkedLength];
     const buf = this[kChunkedBuffer];
 
     // assert(this.chunkedEncoding);
 
-    let callbacks: (WriteCallback | undefined)[] | undefined;
-    this._send(len.toString(16), "latin1", null);
-    this._send(crlf_buf, null, null);
+    // let callbacks: (WriteCallback | undefined)[] | undefined;
+    // this._send(len.toString(16), "latin1", null);
+    // this._send(crlf_buf, null, null);
     for (const { data, encoding, callback } of buf) {
-      this._send(data ?? "", encoding, null);
-      if (callback) {
-        callbacks ??= [];
-        callbacks.push(callback);
-      }
+      // this._send(data ?? "", encoding, null);
+      // if (callback) {
+      //   callbacks ??= [];
+      //   callbacks.push(callback);
+      // }
+      this._send(data ?? "", encoding, callback);
     }
-    this._send(
-      crlf_buf,
-      null,
-      callbacks?.length
-        ? (err) => {
-            for (const callback of callbacks) {
-              callback?.(err);
-            }
-          }
-        : null
-    );
+    // this._send(
+    //   crlf_buf,
+    //   null,
+    //   callbacks?.length
+    //     ? (err) => {
+    //         for (const callback of callbacks) {
+    //           callback?.(err);
+    //         }
+    //       }
+    //     : null
+    // );
 
     this[kChunkedBuffer].length = 0;
     this[kChunkedLength] = 0;
@@ -1067,7 +1073,13 @@ export class FetchOutgoingMessage extends Writable implements OutgoingMessage {
     const finish = onFinish.bind(undefined, this);
 
     if (this._hasBody && this.chunkedEncoding) {
-      this._send("0\r\n" + this._trailer + "\r\n", "latin1", finish);
+      // Difference from Node.js -
+      // Chunked transfer encoding doesn't need to use the low-level protocol
+      // (with each chunk preceded by its length)
+      // So here we just send an empty chunk. Trailers are not supported
+
+      // this._send("0\r\n" + this._trailer + "\r\n", "latin1", finish);
+      this._send("", "latin1", finish);
     } else if (!this._headerSent || this.writableLength || chunk) {
       this._send("", "latin1", finish);
     } else {
@@ -1296,7 +1308,7 @@ function matchHeader(
   }
 }
 
-const crlf_buf = Buffer.from("\r\n");
+// const crlf_buf = Buffer.from("\r\n");
 
 function onError(
   msg: FetchOutgoingMessage,
@@ -1444,10 +1456,15 @@ function write_(
       msg[kChunkedLength] += len;
       ret = msg[kChunkedLength] < msg[kHighWaterMark];
     } else {
-      msg._send(len.toString(16), "latin1", null);
-      msg._send(crlf_buf, null, null);
-      msg._send(chunk, encoding, null, len);
-      ret = msg._send(crlf_buf, null, callback);
+      // Difference from Node.js -
+      // Chunked transfer encoding doesn't need to use the low-level protocol
+      // (with each chunk preceded by its length)
+
+      // msg._send(len.toString(16), "latin1", null);
+      // msg._send(crlf_buf, null, null);
+      // msg._send(chunk, encoding, null, len);
+      // ret = msg._send(crlf_buf, null, callback);
+      ret = msg._send(chunk, encoding, callback, len);
     }
   } else {
     ret = msg._send(chunk, encoding, callback, len);
