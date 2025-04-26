@@ -417,7 +417,7 @@ export class FetchServerResponse
     }
 
     const _this = this;
-    const body = this._hasBody
+    let body = this._hasBody
       ? new ReadableStream<Uint8Array>({
           start(controller) {
             for (const dataChunk of initialDataChunks) {
@@ -442,6 +442,16 @@ export class FetchServerResponse
           },
         })
       : null;
+
+    // @ts-expect-error this is (currently) a cloudflare-specific class
+    if (body != null && typeof FixedLengthStream !== "undefined") {
+      const contentLength = parseInt(headers.get("content-length") ?? "", 10); // will be NaN if not set
+
+      if (contentLength >= 0) {
+        // @ts-expect-error this is (currently) a cloudflare-specific class
+        body = body.pipeThrough(new FixedLengthStream(contentLength));
+      }
+    }
 
     return new Response(body, {
       status,
